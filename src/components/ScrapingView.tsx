@@ -51,13 +51,22 @@ export function ScrapingView() {
             if (scrapingMode !== 'browser') {
                 try {
                     setProgress('🐍 Connecting to Python scraping engine...');
+                    const controller = new AbortController();
+                    const timeout = setTimeout(() => controller.abort(), 5000);
+
                     const response = await fetch('/api/scrape', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ url: normalizedUrl, max_pages: 5 }),
+                        signal: controller.signal,
                     });
+                    clearTimeout(timeout);
 
                     if (response.ok) {
+                        const contentType = response.headers.get('content-type') || '';
+                        if (!contentType.includes('application/json')) {
+                            throw new Error('Backend not available');
+                        }
                         const data = await response.json();
                         if (data.success && data.leads && data.leads.length > 0) {
                             scrapedLeads = data.leads;
@@ -83,15 +92,18 @@ export function ScrapingView() {
             if (!usedBackend) {
                 setProgress('🌐 Using browser-side scraping (CORS proxy)...');
                 const csResult = await clientSideScrape(normalizedUrl, categories);
+                if (csResult.error && csResult.leads.length === 0) {
+                    throw new Error(csResult.error);
+                }
                 scrapedLeads = csResult.leads.map(l => ({
                     company_name: l.company_name || '',
                     contact_name: l.contact_name,
                     email: l.email,
                     phone: l.phone,
-                    website: normalizedUrl,
+                    website: l.website || normalizedUrl,
                     description: l.description,
-                    source_url: normalizedUrl,
-                    category_suggestion: null,
+                    source_url: l.source_url || normalizedUrl,
+                    category_suggestion: l.category_suggestion,
                 }));
                 setPagesScraped(1);
                 setProgress('✅ Browser scraping complete');
@@ -241,8 +253,8 @@ export function ScrapingView() {
                             key={mode.key}
                             onClick={() => setScrapingMode(mode.key as any)}
                             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${scrapingMode === mode.key
-                                    ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
-                                    : 'text-slate-500 hover:text-slate-300 border border-transparent'
+                                ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                                : 'text-slate-500 hover:text-slate-300 border border-transparent'
                                 }`}
                             title={mode.desc}
                         >
@@ -326,8 +338,8 @@ export function ScrapingView() {
                                         onClick={() => handleAddLead(result, index)}
                                         disabled={addedLeads.has(index)}
                                         className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex-shrink-0 ${addedLeads.has(index)
-                                                ? 'bg-emerald-500/20 text-emerald-400'
-                                                : 'btn-primary'
+                                            ? 'bg-emerald-500/20 text-emerald-400'
+                                            : 'btn-primary'
                                             }`}
                                     >
                                         {addedLeads.has(index) ? (
