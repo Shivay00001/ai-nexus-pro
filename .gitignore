@@ -1,0 +1,62 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+bin/
+build/
+develop-eggs/
+dist/
+eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Database files
+*.db
+memory.db
+test_billing.db
+test_distributed.db
+test_vault.db
+
+# Logs
+*.log
+cli_demo.log
+cli_demo_final.log
+cli_demo_fixed.log
+cli_run_final.log
+cli_run_prod.log
+cli_run_verbose.log
+error.log
+error_specialists.log
+error_worker.log
+final_test.log
+full_output.log
+test_output.log
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project specific
+.qodo/
+debug_output.txt
+debug_path.py
+debug_path_file.py
+debug_db.py
+boost_user.py
+check_*.py
+update_imports.py
+mnt/

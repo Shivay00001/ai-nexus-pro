@@ -1,0 +1,23 @@
+# GOATCLAW Dependencies
+
+# Core Production Stack
+sqlalchemy>=2.0.0          # ORM & Database Toolkit
+asyncpg>=0.28.0            # Async PostgreSQL driver
+qdrant-client>=1.7.0       # Vector Database Client
+redis>=5.0.0               # Message Broker & Cache
+pydantic>=2.0.0            # Data Validation
+
+# Observability
+structlog>=23.1.0          # Structured Logging
+opentelemetry-api>=1.20.0  # Distributed Tracing API
+opentelemetry-sdk>=1.20.0  # Distributed Tracing SDK
+
+# LLM Integration (Optional Adapters)
+openai>=1.0.0
+anthropic>=0.18.0
+google-generativeai
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
