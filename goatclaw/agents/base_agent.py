@@ -12,10 +12,10 @@ Enhanced with:
 
 from abc import ABC, abstractmethod
 import asyncio
+import os
 import time
 import uuid
 import logging
-import aiohttp
 from typing import Any, Dict, List, Optional, Callable
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -28,9 +28,35 @@ from goatclaw.core.event_bus import EventBus, Event
 from goatclaw.core.metrics import metrics_manager
 from goatclaw.core.vault import vault
 from goatclaw.core.ollama_client import ollama_client
+from goatclaw.core.http import create_session
 from goatclaw.core.billing import billing_manager
 
 logger = logging.getLogger("goatclaw.base_agent")
+
+
+class LLMNotConfiguredError(RuntimeError):
+    """Raised when an LLM call is attempted without a configured API key."""
+
+
+class LLMProviderError(RuntimeError):
+    """Raised when a real LLM provider API call fails (authentic provider error)."""
+
+
+# Environment variables that enable real LLM behavior, per provider.
+# Keys are loaded from the environment first, then from the encrypted vault.
+LLM_PROVIDER_ENV_VARS = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "kimi": "KIMI_API_KEY",       # also accepts MOONSHOT_API_KEY
+    "nvidia": "NVIDIA_API_KEY",
+}
+
+# Environment variables that enable real web-search behavior.
+SEARCH_PROVIDER_ENV_VARS = {
+    "serper": "SERPER_API_KEY",
+    "tavily": "TAVILY_API_KEY",
+}
 
 
 @dataclass
@@ -269,11 +295,25 @@ class BaseAgent(ABC):
             # After hooks
             await self._run_hooks("after_execute", task_node, context, result, error)
 
-            # USP: Platform Monetization - Deduct credits for orchestration cycle
-            # Deduct credits if billing manager available
-            if hasattr(self, "billing_manager") and self.billing_manager:
-                await self.billing_manager.deduct_credits(context.user_id, 1.0) # Specialization cost
-                metrics_manager.record_credits(1.0)
+            # USP: Platform Monetization - Deduct credits for each agent execution.
+            # Uses the module-level billing_manager (the old hasattr check on
+            # self.billing_manager never fired, so nothing was ever deducted).
+            try:
+                cost = billing_manager.COSTS["orchestration_cycle"]
+                deducted = await billing_manager.deduct_credits(
+                    context.user_id, cost, reason="orchestration_cycle"
+                )
+                if deducted:
+                    metrics_manager.record_credits(cost)
+                else:
+                    logger.warning(
+                        f"Credit deduction failed for user {context.user_id} "
+                        f"(insufficient balance or missing account)"
+                    )
+            except Exception:
+                # Billing must never crash task execution; the failure is logged
+                # for operators to reconcile.
+                logger.exception("Billing deduction raised unexpectedly")
             
             # Record execution metrics
             metrics_manager.increment_task_count(self.agent_type, "success" if not error else "failed")
@@ -281,46 +321,103 @@ class BaseAgent(ABC):
 
         return result or {}
 
+    def _resolve_env_api_key(self, provider: str) -> Optional[str]:
+        """
+        Resolve an LLM API key from environment variables.
+
+        Lookup order (first hit wins):
+        1. Provider-specific variable, e.g. ``OPENAI_API_KEY``.
+           (``kimi`` also accepts ``MOONSHOT_API_KEY``.)
+        """
+        env_var = LLM_PROVIDER_ENV_VARS.get(provider)
+        if env_var:
+            key = os.environ.get(env_var)
+            if key:
+                return key
+            if provider == "kimi":
+                key = os.environ.get("MOONSHOT_API_KEY")
+                if key:
+                    return key
+        return None
+
     async def _get_api_key(self, provider: str, user_id: str) -> Optional[str]:
         """USP: Securely retrieve and decrypt user API key for the given provider."""
         from goatclaw.database import db_manager, SecretModel
         from sqlalchemy import select
-        
-        async with await db_manager.get_session() as session:
-            stmt = select(SecretModel).where(
-                SecretModel.user_id == user_id, 
-                SecretModel.provider == provider
-            )
-            result = await session.execute(stmt)
-            secret_record = result.scalar_one_or_none()
-            
-            if secret_record:
-                return vault.decrypt(secret_record.encrypted_key)
+
+        # Environment-configured keys take precedence over vault-stored ones.
+        env_key = self._resolve_env_api_key(provider)
+        if env_key:
+            return env_key
+
+        try:
+            async with await db_manager.get_session() as session:
+                stmt = select(SecretModel).where(
+                    SecretModel.user_id == user_id,
+                    SecretModel.provider == provider
+                )
+                result = await session.execute(stmt)
+                secret_record = result.scalar_one_or_none()
+
+                if secret_record:
+                    return vault.decrypt(secret_record.encrypted_key)
+        except Exception as e:
+            # The vault DB may not be initialized (e.g. fresh checkout with no
+            # `init` run yet). That is not fatal: it just means no vault key.
+            logger.debug(f"Vault key lookup failed ({provider}): {e}")
         return None
 
     async def _call_llm(self, prompt: str, system: Optional[str] = None, model_config: Optional[Dict] = None) -> str:
-        """Helper to call LLM based on provider config."""
+        """
+        Call an LLM via the configured provider.
+
+        Provider/model come from (in precedence order):
+        1. ``GOATCLAW_LLM_PROVIDER`` / ``GOATCLAW_LLM_MODEL`` env vars
+        2. The agent's ``model`` config dict
+        3. Defaults: ``openai`` / ``gpt-4``
+
+        API keys are resolved via :meth:`_get_api_key` (env var, then vault).
+
+        Raises:
+            LLMNotConfiguredError: no API key is configured for the provider.
+                Callers that can degrade gracefully should catch this and
+                return an honest "requires LLM API key" result instead of
+                fabricating output.
+            LLMProviderError: the provider API call itself failed (e.g. a 401
+                from a bad key). This is an authentic provider error and must
+                propagate -- never converted into fake content.
+        """
         model_config = model_config or self.config.get("model", {})
-        provider = model_config.get("provider", "openai")
-        model_name = model_config.get("name", "gpt-4")
+        provider = (
+            os.environ.get("GOATCLAW_LLM_PROVIDER")
+            or model_config.get("provider", "openai")
+        )
+        model_name = (
+            os.environ.get("GOATCLAW_LLM_MODEL")
+            or model_config.get("name", "gpt-4")
+        )
 
         # Record API call metric
         metrics_manager.record_api_call(provider)
 
         if provider == "ollama":
+            # Local Ollama needs no API key.
             return await ollama_client.generate(model_name, prompt, system)
-        
+
         # USP: Generic API Dispatcher for OpenAI/Anthropic
-        api_key = await self._get_api_key(provider, "system_orchestrator") # Use system key or user context?
-        # In multi-tenant, we'd get context.user_id here
-        
+        api_key = await self._get_api_key(provider, "system_orchestrator")
+        # In multi-tenant, we'd pass context.user_id here instead.
+
         if not api_key:
-            # Fallback for testing/demos
-            logger.warning(f"No API key found for {provider}, using simulated response.")
-            return f"Simulated response from {provider}:{model_name} (No key found)"
+            env_var = LLM_PROVIDER_ENV_VARS.get(provider, "<PROVIDER>_API_KEY")
+            raise LLMNotConfiguredError(
+                f"No API key configured for LLM provider '{provider}'. "
+                f"Set the {env_var} environment variable (or store a key for "
+                f"provider '{provider}' in the vault) to enable LLM features."
+            )
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with create_session() as session:
                 # Provider Endpoints
                 PROVIDERS = {
                     "openai": "https://api.openai.com/v1/chat/completions",
@@ -346,7 +443,7 @@ class BaseAgent(ABC):
                             return data["choices"][0]["message"]["content"]
                         else:
                             error = await resp.text()
-                            raise Exception(f"{provider.capitalize()} error {resp.status}: {error}")
+                            raise LLMProviderError(f"{provider} API error {resp.status}: {error}")
 
                 elif provider == "anthropic":
                     url = "https://api.anthropic.com/v1/messages"
@@ -367,14 +464,16 @@ class BaseAgent(ABC):
                             return data["content"][0]["text"]
                         else:
                             error = await resp.text()
-                            raise Exception(f"Anthropic error {resp.status}: {error}")
+                            raise LLMProviderError(f"Anthropic API error {resp.status}: {error}")
 
                 else:
-                    raise ValueError(f"Unsupported provider: {provider}")
+                    raise LLMProviderError(f"Unsupported provider: {provider}")
 
+        except (LLMNotConfiguredError, LLMProviderError):
+            raise
         except Exception as e:
             logger.error(f"LLM call failed for {provider}: {e}")
-            return f"Error calling {provider}: {str(e)}"
+            raise LLMProviderError(f"{provider} call failed: {e}") from e
 
     async def _check_permissions(
         self,

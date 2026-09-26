@@ -2,10 +2,13 @@
 
 # Core Production Stack
 sqlalchemy>=2.0.0          # ORM & Database Toolkit
+aiosqlite>=0.17.0          # Async SQLite driver (default database)
+aiohttp>=3.9.0             # Async HTTP (LLM providers, web search)
 asyncpg>=0.28.0            # Async PostgreSQL driver
 qdrant-client>=1.7.0       # Vector Database Client
 redis>=5.0.0               # Message Broker & Cache
 pydantic>=2.0.0            # Data Validation
+cryptography>=41.0.0       # Vault encryption for stored API keys
 
 # Observability
 structlog>=23.1.0          # Structured Logging

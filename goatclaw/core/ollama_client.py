@@ -1,4 +1,4 @@
-import aiohttp
+from goatclaw.core.http import create_session
 import json
 import logging
 from typing import Any, Dict, List, Optional
@@ -26,7 +26,7 @@ class OllamaClient:
             payload["system"] = system
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with create_session() as session:
                 async with session.post(url, json=payload) as response:
                     if response.status != 200:
                         error_text = await response.text()
@@ -49,7 +49,7 @@ class OllamaClient:
         }
 
         try:
-            async with aiohttp.ClientSession() as session:
+            async with create_session() as session:
                 async with session.post(url, json=payload) as response:
                     if response.status != 200:
                         error_text = await response.text()

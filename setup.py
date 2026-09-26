@@ -30,7 +30,13 @@ setup(
     ],
     python_requires=">=3.9",
     install_requires=[
-        # Core has no external dependencies!
+        "sqlalchemy>=2.0.0",
+        "aiosqlite>=0.17.0",
+        "aiohttp>=3.9.0",
+        "pydantic>=2.0.0",
+        "structlog>=23.1.0",
+        "cryptography>=41.0.0",
+        "redis>=5.0.0",
     ],
     extras_require={
         "dev": [

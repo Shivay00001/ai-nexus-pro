@@ -27,6 +27,71 @@ from goatclaw.agents.base_agent import BaseAgent
 logger = logging.getLogger("goatclaw.validation_agent")
 
 
+class _SafeNamespace:
+    """
+    Read-only attribute-style view over a dict.
+
+    Lets validation rules written as ``output.confidence > 0.5`` work when
+    ``output`` is a plain dict (``output["confidence"]``). Nested dicts/lists
+    are wrapped recursively. Attribute names starting with "_" are blocked so
+    dunder/private attributes are never reachable from a rule expression.
+    """
+
+    __slots__ = ("_data",)
+
+    def __init__(self, data: Dict[str, Any]):
+        # Bypass __setattr__ guard via object.__setattr__ (slots class).
+        object.__setattr__(self, "_data", data)
+
+    def __getattr__(self, name: str) -> Any:
+        if name.startswith("_"):
+            raise AttributeError(f"attribute {name!r} is not accessible")
+        try:
+            value = self._data[name]
+        except (KeyError, TypeError):
+            raise AttributeError(f"dict has no key {name!r}")
+        return _wrap_value(value)
+
+    def __getitem__(self, key: str) -> Any:
+        return _wrap_value(self._data[key])
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._data
+
+    def __repr__(self) -> str:
+        return repr(self._data)
+
+
+def _wrap_value(value: Any) -> Any:
+    """Recursively wrap dicts (and dicts inside lists/tuples) for attr access."""
+    if isinstance(value, dict):
+        return _SafeNamespace(value)
+    if isinstance(value, (list, tuple)):
+        return [_wrap_value(v) for v in value]
+    return value
+
+
+# Expressions that must never appear in a validation rule. Rules are evaluated
+# with eval(), so anything that could escape the sandbox is rejected up front.
+_FORBIDDEN_EXPRESSION_PATTERNS = (
+    "__",  # dunder access of any kind
+    "import", "eval", "exec", "compile", "open",
+    "getattr", "setattr", "delattr", "globals", "locals", "vars",
+    "input", "exit", "quit", "help", "breakpoint", "memoryview",
+)
+
+# The only names a rule expression may reference. "output" and "task" are
+# injected per evaluation; "True"/"False"/"None" resolve as Python literals.
+_SAFE_EXPRESSION_HELPERS = {
+    "len": len, "str": str, "int": int, "float": float, "bool": bool,
+    "abs": abs, "min": min, "max": max, "round": round,
+    "sum": sum, "any": any, "all": all,
+}
+_ALLOWED_EXPRESSION_NAMES = {
+    "output", "task", *_SAFE_EXPRESSION_HELPERS, "True", "False", "None",
+}
+
+
 class ValidationAgent(BaseAgent):
     """
     USP: AI-powered validation with self-healing.
@@ -340,29 +405,54 @@ class ValidationAgent(BaseAgent):
     ) -> Dict[str, Any]:
         """
         Validate using custom expression.
-        
+
         Expression can reference:
-        - output: the output data
+        - output: the output data (dicts support attribute access,
+          e.g. ``output.confidence`` reads ``output["confidence"]``)
         - task: the task node
-        
+
         Example: "output.confidence > 0.5"
+
+        Sandboxing (documented):
+        - The expression is evaluated with ``eval()`` but with
+          ``__builtins__`` removed and only an explicit allow-list of names
+          (``output``, ``task``, plus harmless helpers like ``len``/``str``/
+          ``int``/``float``) visible.
+        - Any expression containing dunder sequences (``__``) or dangerous
+          keywords (``import``, ``eval``, ``exec``, ``open``, ``getattr``,
+          ``globals``, ...) is rejected before evaluation.
+        - ``output`` is exposed through a read-only ``_SafeNamespace`` wrapper,
+          so rules cannot mutate data or reach private attributes.
+        - Rules are operator-authored task configuration, not end-user input;
+          the sandbox is defense-in-depth for that threat model.
         """
         expression = config.get("expression", "")
-        
+
+        lowered = expression.lower()
+        for forbidden in _FORBIDDEN_EXPRESSION_PATTERNS:
+            if forbidden in lowered:
+                return {
+                    "valid": False,
+                    "message": (
+                        f"Expression rejected by sandbox: contains forbidden "
+                        f"pattern {forbidden!r}"
+                    ),
+                }
+
         try:
-            # Create safe evaluation context
+            # Create safe evaluation context. Wrap dict outputs so that
+            # attribute-style access (output.confidence) works on plain dicts.
+            # The context is built from _ALLOWED_EXPRESSION_NAMES so the
+            # allow-list stays the single source of truth.
             context = {
-                "output": output,
+                "output": _wrap_value(output) if isinstance(output, dict) else output,
                 "task": task_node,
-                "len": len,
-                "str": str,
-                "int": int,
-                "float": float,
+                **_SAFE_EXPRESSION_HELPERS,
             }
-            
-            # Evaluate expression
+
+            # Evaluate expression with no builtins available.
             result = eval(expression, {"__builtins__": {}}, context)
-            
+
             if isinstance(result, bool):
                 return {
                     "valid": result,
@@ -374,7 +464,7 @@ class ValidationAgent(BaseAgent):
                     "valid": False,
                     "message": f"Expression must return boolean, got {type(result).__name__}"
                 }
-        
+
         except Exception as e:
             logger.exception(f"Error evaluating expression '{expression}': {e}")
             return {
@@ -409,9 +499,25 @@ class ValidationAgent(BaseAgent):
         - "message" (string explaining the result)
         """
         system = "You are an expert quality assurance agent. Your output must be valid JSON."
-        
-        response = await self._call_llm(prompt, system=system)
-        
+
+        try:
+            response = await self._call_llm(prompt, system=system)
+        except LLMNotConfiguredError as e:
+            # Fail closed: without an LLM we cannot semantically validate,
+            # so report an honest failure instead of a fabricated verdict.
+            return {
+                "valid": False,
+                "confidence": 0.0,
+                "message": f"Semantic validation unavailable: {e}",
+            }
+        except Exception as e:
+            logger.error(f"Semantic validation LLM call failed: {e}")
+            return {
+                "valid": False,
+                "confidence": 0.0,
+                "message": f"Semantic validation failed: LLM call error: {e}",
+            }
+
         try:
             if "{" in response:
                 json_part = response[response.find("{"):response.rfind("}")+1]

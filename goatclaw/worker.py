@@ -20,7 +20,10 @@ from goatclaw.database import db_manager
 from goatclaw.agents.validation_agent import ValidationAgent
 from goatclaw.agents.memory_agent import MemoryAgent
 from goatclaw.agents.security_agent import SecurityAgent
-from goatclaw.specialists import CodeAgent, ResearchAgent, DataProcessingAgent
+from goatclaw.specialists import (
+    CodeAgent, ResearchAgent, DataProcessingAgent,
+    FileSystemAgent, APIAgent, DevOpsAgent,
+)
 
 from goatclaw.core.logging_config import setup_logging
 setup_logging(level=logging.INFO)
@@ -75,7 +78,11 @@ class Worker:
     async def run(self):
         """Main worker loop."""
         self.running = True
-        metrics_manager._gauges["active_workers"].inc()
+        # The "active_workers" gauge only exists when prometheus_client is
+        # installed; never let missing observability kill the worker.
+        active_workers_gauge = metrics_manager._gauges.get("active_workers")
+        if active_workers_gauge is not None:
+            active_workers_gauge.inc()
         
         try:
             while self.running:
@@ -94,7 +101,8 @@ class Worker:
                     logger.error(f"Worker loop error: {e}")
                     await asyncio.sleep(1)
         finally:
-            metrics_manager._gauges["active_workers"].dec()
+            if active_workers_gauge is not None:
+                active_workers_gauge.dec()
             self.running = False
 
     async def process_task(self, task_data: Dict[str, Any]):

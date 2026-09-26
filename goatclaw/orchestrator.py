@@ -185,7 +185,11 @@ class Orchestrator:
                 },
                 priority=1
             ))
-            
+
+            # Propagate honest degraded status (e.g. planner LLM fallback).
+            result["degraded"] = bool(task_graph.metadata.get("degraded", False))
+            result["degradation_reason"] = task_graph.metadata.get("degradation_reason")
+
             return result
             
         except Exception as e:

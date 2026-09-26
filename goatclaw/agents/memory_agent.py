@@ -11,6 +11,7 @@ Enhanced with:
 """
 
 import asyncio
+import json
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 from collections import defaultdict
@@ -129,7 +130,8 @@ class MemoryAgent(BaseAgent):
         async with await db_manager.get_session() as session:
             db_record = MemoryRecordModel(
                 id=record_id,
-                content=json.dumps(record.to_dict()), # Store full object for now
+                # default=str keeps snapshots with datetimes/enums JSON-serializable
+                content=json.dumps(record.to_dict(), default=str), # Store full object for now
                 type=record.category,
                 timestamp=record.created_at,
                 embedding_id=embedding_id,

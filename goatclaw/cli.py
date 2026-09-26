@@ -46,10 +46,18 @@ async def submit_simple_goal(goal: str, distributed: bool):
         # 2. Execute the plan
         print(f"[*] Executing {len(graph.nodes)} planned nodes...")
         result = await orch.process_goal(graph, sec_ctx)
-        
-        print("\n[SUCCESS] Execution Finished!")
-        print(f"Status: {result['status']}")
-        print(f"Completed Nodes: {len(result['completed_nodes'])}/{result['total_nodes']}")
+
+        if result.get("degraded"):
+            # Honest degraded report: the planner fell back (no LLM key), so
+            # this is NOT a full success even if the fallback node completed.
+            print("\n[DEGRADED] Execution finished in degraded mode.")
+            print(f"Reason: {result.get('degradation_reason')}")
+            print(f"Status: {result['status']}")
+            print(f"Completed Nodes: {len(result['completed_nodes'])}/{result['total_nodes']}")
+        else:
+            print("\n[SUCCESS] Execution Finished!")
+            print(f"Status: {result['status']}")
+            print(f"Completed Nodes: {len(result['completed_nodes'])}/{result['total_nodes']}")
         
         if result["errors"]:
             print("\n[!] Errors encountered:")

@@ -260,6 +260,24 @@ class MemoryRecord:
     created_at: datetime = field(default_factory=datetime.utcnow)
     ttl_hours: Optional[int] = None  # Time to live
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize memory record to a JSON-safe dictionary."""
+        return {
+            "record_id": self.record_id,
+            "category": self.category,
+            "goal_summary": self.goal_summary,
+            "task_graph_snapshot": self.task_graph_snapshot,
+            "execution_logs": self.execution_logs,
+            "errors_and_resolutions": self.errors_and_resolutions,
+            "context_tags": self.context_tags,
+            "embedding": self.embedding,
+            "similarity_threshold": self.similarity_threshold,
+            "access_count": self.access_count,
+            "last_accessed": self.last_accessed.isoformat() if self.last_accessed else None,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "ttl_hours": self.ttl_hours,
+        }
+
 
 @dataclass
 class SecurityContext:

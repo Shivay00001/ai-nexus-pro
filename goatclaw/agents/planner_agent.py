@@ -50,9 +50,9 @@ class PlannerAgent(BaseAgent):
         4. Output ONLY the JSON object.
         """
         
-        response = await self._call_llm(prompt, system="You are an expert system architect.")
-        
+        response = None
         try:
+            response = await self._call_llm(prompt, system="You are an expert system architect.")
             # Extract JSON
             if "{" in response:
                 json_part = response[response.find("{"):response.rfind("}")+1]
@@ -82,7 +82,10 @@ class PlannerAgent(BaseAgent):
             
         except Exception as e:
             logger.error(f"Planning failed: {e}")
-            # Fallback to a simple 1-node graph
+            # Honest fallback: the planner could not use an LLM (usually: no
+            # API key configured), so it emits a single-node heuristic graph.
+            # The graph is explicitly marked degraded so callers never mistake
+            # this for a real plan.
             fallback_node = TaskNode(
                 name="fallback_task",
                 agent_type=AgentType.RESEARCH,
@@ -90,6 +93,12 @@ class PlannerAgent(BaseAgent):
             )
             fallback_graph = TaskGraph(goal_summary=goal)
             fallback_graph.add_node(fallback_node)
+            fallback_graph.metadata["degraded"] = True
+            fallback_graph.metadata["degradation_reason"] = (
+                f"LLM planning unavailable ({e}); used single-node "
+                f"heuristic fallback. Set an LLM API key (e.g. OPENAI_API_KEY) "
+                f"for real planning."
+            )
             return fallback_graph
 
     async def execute(self, task_node: TaskNode, context: SecurityContext) -> Dict[str, Any]:

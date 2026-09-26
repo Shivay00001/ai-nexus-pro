@@ -82,30 +82,45 @@ def create_default_security_context() -> SecurityContext:
 def create_demo_task_graph() -> TaskGraph:
     """
     Create a demonstration task graph.
-    
+
+    The demo uses only no-API-key capabilities so it completes honestly on a
+    fresh checkout with zero configuration:
+
+    - Node 1: real web search (DuckDuckGo Instant Answer fallback; Serper or
+      Tavily if keys are configured)
+    - Node 2: real sandboxed file write
+    - Node 3: real local data transformation
+    - Node 4: real local data cleaning
+
     Demonstrates:
     - Multiple agent types
     - Dependencies between tasks
-    - Validation rules
+    - Dict-aware validation rules (``output.<key>`` expressions)
     - Retry configuration
+
+    LLM-dependent tasks (code generation, review, document analysis) are
+    deliberately excluded from the demo: they return an honest "degraded"
+    result without an API key instead of fabricated output.
     """
     graph = TaskGraph(
-        goal_summary="Research Python async patterns, generate code, and analyze results",
+        goal_summary="Research Python via web search, persist findings, and process results",
         confidence_score=0.92,
         execution_mode=ExecutionMode.SEQUENTIAL,
         max_parallel_tasks=3
     )
 
-    # Node 1: Research async patterns
+    # Node 1: Real web search (DuckDuckGo Instant Answer fallback when no
+    # search keys are configured). "Python programming language" is a query
+    # the free IA API genuinely answers.
     n1 = TaskNode(
         node_id="research_1",
-        name="Research async patterns",
-        description="Find best practices for Python async/await.",
+        name="Research Python language",
+        description="Search the web for Python programming language facts.",
         agent_type=AgentType.RESEARCH,
         required_permissions=[PermissionScope.READ, PermissionScope.NETWORK],
-        validation_rule="output.confidence > 0.5",
+        validation_rule="output.result_count >= 1",
         input_data={
-            "query": "Python async/await best practices 2025",
+            "query": "Python programming language",
             "action": "search"
         },
         retry_config=RetryConfig(
@@ -115,19 +130,19 @@ def create_demo_task_graph() -> TaskGraph:
         priority=1
     )
 
-    # Node 2: Generate code based on research
+    # Node 2: Real sandboxed file write.
     n2 = TaskNode(
-        node_id="codegen_1",
-        name="Generate async utility module",
-        description="Generate Python code based on research findings.",
-        agent_type=AgentType.CODE,
+        node_id="file_1",
+        name="Write research snapshot",
+        description="Persist a snapshot of the demo run to the sandbox.",
+        agent_type=AgentType.FILESYSTEM,
         dependencies=["research_1"],
         required_permissions=[PermissionScope.READ, PermissionScope.WRITE],
-        validation_rule="output.status == 'generated'",
+        validation_rule="output.status == 'success'",
         input_data={
-            "action": "generate",
-            "language": "python",
-            "spec": "Async utility module with retry, timeout, and gather helpers"
+            "action": "write",
+            "path": "demo_output.txt",
+            "content": "GOATCLAW demo run: real web search + real file write + real data ops.\n"
         },
         retry_config=RetryConfig(
             max_retries=3,
@@ -135,31 +150,41 @@ def create_demo_task_graph() -> TaskGraph:
         )
     )
 
-    # Node 3: Review generated code
+    # Node 3: Real local data transformation (no LLM required).
     n3 = TaskNode(
-        node_id="review_1",
-        name="Review generated code",
-        description="Quality review of the generated module.",
-        agent_type=AgentType.CODE,
-        dependencies=["codegen_1"],
+        node_id="data_1",
+        name="Transform sample dataset",
+        description="Transform a sample dataset between formats.",
+        agent_type=AgentType.DATA_PROCESSING,
+        dependencies=["research_1"],
         required_permissions=[PermissionScope.READ],
-        validation_rule="output.quality_score > 0.7",
+        validation_rule="output.records_processed == 3",
         input_data={
-            "action": "review"
+            "action": "transform",
+            "target_format": "json",
+            "data": [
+                {"id": 1, "language": "python"},
+                {"id": 2, "language": "rust"},
+                {"id": 3, "language": "go"},
+            ]
         }
     )
 
-    # Node 4: Process results
+    # Node 4: Real local data cleaning (no LLM required).
     n4 = TaskNode(
         node_id="process_1",
-        name="Process and summarize",
-        description="Process all results and create summary.",
+        name="Clean sample dataset",
+        description="Clean and normalize the sample dataset.",
         agent_type=AgentType.DATA_PROCESSING,
-        dependencies=["research_1", "review_1"],
+        dependencies=["file_1", "data_1"],
         required_permissions=[PermissionScope.READ],
+        validation_rule="output.status == 'cleaned'",
         input_data={
-            "action": "analyze",
-            "data": []
+            "action": "clean",
+            "data": [
+                {"id": 1, "value": "  hello  "},
+                {"id": 2, "value": None},
+            ]
         }
     )
 
@@ -233,7 +258,11 @@ async def run_demo():
         print("📊 Node Execution Details:")
         print()
         for log in result["execution_log"]:
-            status_icon = "[OK]" if log["status"] == "success" else "[FAIL]"
+            node_status = log["status"]
+            # ExecutionLog.status is a TaskStatus enum; normalize to its value
+            # for display in case a string slips through.
+            node_status = getattr(node_status, "value", str(node_status))
+            status_icon = "[OK]" if node_status == "success" else "[FAIL]"
             dur = f"{log.get('duration_ms', 0):.1f}ms" if log.get("duration_ms") else "N/A"
             print(f"  {status_icon} {log['node_id']:20s} — {log['agent_type']:20s} ({dur})")
 
